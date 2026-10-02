@@ -52,7 +52,11 @@ evo has several advantages over other public benchmarking tools:
 Installation is easy-peasy if you're familiar with this: https://xkcd.com/1987/#
 
 The latest version of evo supports **Python 3.10+**.
-You might also want to use a [virtual environment](https://github.com/MichaelGrupp/evo/blob/master/doc/install_in_virtualenv.md).
+
+Please use `pip` only in a proper environment (e.g. `uv`/`uvx`, `pipx`, `venv`, Pixi or a classic [virtual environment](https://github.com/MichaelGrupp/evo/blob/master/doc/install_in_virtualenv.md)).
+> ⚠️ ☠️☠️☠️ ⚠️
+>
+> Whatever you do, don't use: `pip install --user` / anything with `--break-system-packages` / or worst: `sudo pip install`
 
 ### From PyPi
 If you just want to use the executables of the latest release version, the easiest way is to run:
@@ -92,7 +96,7 @@ If you run into issues with installing tkinter, trying PyQt6 is a good idea.
 
 **ROS (optional)**
 
-Some ROS-related features require a ROS installation, see [here](http://www.ros.org/). We are testing this package with ROS Kilted.
+Some ROS-related features require a ROS installation, see [here](http://www.ros.org/). We are testing this package with ROS Lyrical.
 
 > Reading ROS bag files works also without a ROS installation thanks to the great [rosbags](https://pypi.org/project/rosbags/) package that is installed together with evo. This allows you also to read ROS 1 & 2 bags even if you don't have one of those ROS distros installed. (except for reading `/tf` topics, because there we need the buffer implementation from ROS)
 

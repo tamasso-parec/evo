@@ -58,10 +58,7 @@ def send_bundle_to_rerun(
     logger.debug(SEP)
     logger.debug("Sending data to Rerun.")
     rr.init("evo_traj", recording_id=args.rerun_rec_id)
-    rr.spawn(port=SETTINGS.rerun_viewer_port)
-    client = ViewerClient(
-        addr=f"rerun+http://127.0.0.1:{SETTINGS.rerun_viewer_port}/proxy"
-    )
+    client: ViewerClient = revo.connect_or_spawn()
 
     # Send statistics table first (dedicated view, not part of visualization blueprint).
     stats_df = pandas_bridge.trajectories_stats_to_df(
@@ -138,7 +135,7 @@ def send_bundle_to_rerun(
                     labelname="v (m/s)",
                 )
             except TrajectoryException as error:
-                logger.error(
+                logger.warning(
                     f"Can't send speeds of 'reference' to Rerun: {error}"
                 )
 
@@ -189,7 +186,7 @@ def send_bundle_to_rerun(
                     labelname="v (m/s)",
                 )
             except TrajectoryException as error:
-                logger.error(
+                logger.warning(
                     f"Can't send speeds of '{to_compact_name(name, args)}' to Rerun: {error}"
                 )
 

@@ -22,7 +22,8 @@ import argparse
 import logging
 
 import evo.cli.common_ape_rpe as common
-from evo.core import metrics, sync
+from evo.core import metrics
+from evo.core.sync import SyncMethod
 from evo.core.trajectory import PoseTrajectory3D, Plane
 from evo.main_rpe import rpe
 from evo.tools import file_interface, log
@@ -44,7 +45,7 @@ def run(args: argparse.Namespace) -> None:
         logger.debug(f"main_parser config:\n{parser_str}")
     logger.debug(SEP)
 
-    traj_ref, traj_est, ref_name, est_name = common.load_trajectories(args)
+    traj_ref, traj_est = common.load_trajectories(args)
     pose_relation = common.get_pose_relation(args)
     delta_unit = common.get_delta_unit(args)
     change_unit = metrics.Unit(args.change_unit) if args.change_unit else None
@@ -70,14 +71,15 @@ def run(args: argparse.Namespace) -> None:
             if args.t_end:
                 logger.info(f"Using time range end: {args.t_end}s")
             traj_ref.reduce_to_time_range(args.t_start, args.t_end)
-        logger.debug("Synchronizing trajectories...")
-        traj_ref, traj_est = sync.associate_trajectories(
-            traj_ref,
+        sync_method = SyncMethod(args.sync_method)
+        logger.debug(
+            f"Synchronizing trajectories ({sync_method.value} method)..."
+        )
+        traj_ref, traj_est = traj_ref.sync_with(
             traj_est,
-            args.t_max_diff,
-            args.t_offset,
-            first_name=ref_name,
-            snd_name=est_name,
+            sync_method=sync_method,
+            max_diff=args.t_max_diff,
+            offset_2=args.t_offset,
         )
 
     result = rpe(
@@ -93,8 +95,6 @@ def run(args: argparse.Namespace) -> None:
         correct_scale=args.correct_scale,
         n_to_align=args.n_to_align,
         align_origin=args.align_origin,
-        ref_name=ref_name,
-        est_name=est_name,
         change_unit=change_unit,
         project_to_plane=plane,
     )
@@ -113,15 +113,14 @@ def run(args: argparse.Namespace) -> None:
             args,
             result,
             traj_ref,
-            result.trajectories[est_name],
+            traj_est,
             traj_ref_full=traj_ref_full,
         )
 
     if args.save_results:
         logger.debug(SEP)
         if not SETTINGS.save_traj_in_zip:
-            del result.trajectories[ref_name]
-            del result.trajectories[est_name]
+            result.trajectories.clear()
         file_interface.save_res_file(
             args.save_results, result, confirm_overwrite=not args.no_warnings
         )
