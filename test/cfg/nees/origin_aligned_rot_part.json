@@ -1,0 +1,7 @@
+{
+    "align_origin": true,
+    "debug": true,
+    "no_warnings": true,
+    "pose_relation": "rot_part",
+    "t_max_diff": 0.01
+}

@@ -1,0 +1,10 @@
+{
+    "align": true,
+    "debug": true,
+    "no_warnings": true,
+    "pose_relation": "full",
+    "sync_method": "interpolation",
+    "t_max_diff": 0.01,
+    "t_start": 1311868170.0,
+    "t_end": 1311868180.0
+}

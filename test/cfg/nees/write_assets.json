@@ -1,0 +1,12 @@
+{
+    "align": true,
+    "debug": true,
+    "logfile": "tmp/log.txt",
+    "no_warnings": true,
+    "plot_full_ref": true,
+    "plot_mode": "xy",
+    "pose_relation": "full",
+    "save_plot": "tmp/plot.pdf",
+    "save_results": "tmp/result.zip",
+    "t_max_diff": 0.01
+}

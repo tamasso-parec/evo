@@ -1,0 +1,7 @@
+{
+    "align": true,
+    "debug": true,
+    "no_warnings": true,
+    "pose_relation": "full",
+    "t_max_diff": 0.01
+}

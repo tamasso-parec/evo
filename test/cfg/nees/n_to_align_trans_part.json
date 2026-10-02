@@ -1,0 +1,8 @@
+{
+    "align": true,
+    "debug": true,
+    "n_to_align": 50,
+    "no_warnings": true,
+    "pose_relation": "trans_part",
+    "t_max_diff": 0.01
+}

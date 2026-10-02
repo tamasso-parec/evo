@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 unit test for metrics module
-author: Michael Grupp
+author: Tommaso Faraci
 
 This file is part of evo (github.com/MichaelGrupp/evo).
 

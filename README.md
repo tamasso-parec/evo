@@ -125,6 +125,7 @@ After installation with pip, the following executables can be called globally fr
 
 * `evo_ape` - absolute pose error
 * `evo_rpe` - relative pose error
+* `evo_nees` - normalized estimation error squared (NEES), for testing the consistency of pose covariances
 
 **Tools:**
 

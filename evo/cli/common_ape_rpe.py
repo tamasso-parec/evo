@@ -168,7 +168,14 @@ def plot_result(
     traj_ref: PosePath3D,
     traj_est: PosePath3D,
     traj_ref_full: PosePath3D | None = None,
+    statistics: dict[str, float] | None = None,
+    extra_figures: dict | None = None,
 ) -> None:
+    """
+    :param statistics: values to draw as lines in the raw value plot
+                       (default: the statistics of SETTINGS.plot_statistics)
+    :param extra_figures: additional {name: matplotlib figure} to show/export
+    """
     from evo.tools import plot
     from evo.tools.settings import SETTINGS
 
@@ -197,15 +204,17 @@ def plot_result(
         x_array = None
         x_label = "index"
 
+    if statistics is None:
+        statistics = {
+            s: result.stats[s]
+            for s in SETTINGS.plot_statistics
+            if s not in ("min", "max")
+        }
     plot.error_array(
         fig1.gca(),
         result.np_arrays["error_array"],
         x_array=x_array,
-        statistics={
-            s: result.stats[s]
-            for s in SETTINGS.plot_statistics
-            if s not in ("min", "max")
-        },
+        statistics=statistics,
         name=result.info["label"],
         title=result.info["title"],
         xlabel=x_label,
@@ -272,6 +281,8 @@ def plot_result(
     plot_collection = plot.PlotCollection(result.info["title"])
     plot_collection.add_figure("raw", fig1)
     plot_collection.add_figure("map", fig2)
+    for name, fig in (extra_figures or {}).items():
+        plot_collection.add_figure(name, fig)
     if args.plot:
         plot_collection.show()
     if args.save_plot:

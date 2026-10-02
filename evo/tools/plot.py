@@ -1009,6 +1009,76 @@ def error_array(
         plt.legend(frameon=True)
 
 
+def nees_consistency(
+    fig: Figure,
+    nees: ListOrArray,
+    dof: int,
+    title: str = "",
+    color="grey",
+) -> None:
+    """
+    high-level function for plotting the distribution of NEES values against
+    the chi-square distribution that consistent covariances would yield
+    :param fig: matplotlib figure, three subplots are added to it:
+                empirical vs. chi-square CDF, empirical vs. nominal coverage
+                (with the pointwise 95% band of consistent covariances)
+                and a Q-Q plot. The NEES axes are limited to the 99th
+                percentile, so that a few outliers don't hide the rest.
+    :param nees: an nx1 array of NEES values
+    :param dof: degrees of freedom of the NEES values
+    :param title: optional figure title
+    """
+    from scipy import stats
+
+    nees = np.sort(np.asarray(nees, dtype=float))
+    n = len(nees)
+    empirical_cdf = np.arange(1, n + 1) / n
+    reference_style = dict(color="black", linestyle="dashed", linewidth=1.0)
+    ax_cdf, ax_coverage, ax_qq = fig.subplots(1, 3)
+
+    x_max = max(stats.chi2.ppf(0.995, dof), np.quantile(nees, 0.99))
+    x = np.linspace(0.0, x_max, 500)
+    ax_cdf.plot(
+        x,
+        stats.chi2.cdf(x, dof),
+        label=f"$\\chi^2_{{{dof}}}$",
+        **reference_style,
+    )
+    ax_cdf.step(nees, empirical_cdf, where="post", color=color, label="NEES")
+    ax_cdf.set(xlim=(0.0, x_max), xlabel="NEES", ylabel="CDF")
+    if SETTINGS.plot_show_legend:
+        ax_cdf.legend(frameon=True)
+
+    nominal = np.linspace(0.0, 1.0, 201)
+    empirical = np.searchsorted(nees, stats.chi2.ppf(nominal, dof), "right")
+    band_low = stats.binom.ppf(0.025, n, nominal) / n
+    band_high = stats.binom.ppf(0.975, n, nominal) / n
+    ax_coverage.fill_between(
+        nominal, band_low, band_high, color=color, alpha=0.25, label="95$\\%$"
+    )
+    ax_coverage.plot(nominal, nominal, **reference_style)
+    ax_coverage.plot(nominal, empirical / n, color=color, label="NEES")
+    ax_coverage.set(
+        xlim=(0.0, 1.0),
+        ylim=(0.0, 1.0),
+        xlabel="nominal coverage",
+        ylabel="empirical coverage",
+    )
+    if SETTINGS.plot_show_legend:
+        ax_coverage.legend(frameon=True)
+
+    expected = stats.chi2.ppf((np.arange(n) + 0.5) / n, dof)
+    ax_qq.plot([0.0, x_max], [0.0, x_max], **reference_style)
+    ax_qq.scatter(expected, nees, s=9, color=color)
+    ax_qq.set(
+        xlim=(0.0, x_max),
+        ylim=(0.0, x_max),
+        xlabel=f"$\\chi^2_{{{dof}}}$ quantiles",
+        ylabel="NEES quantiles",
+    )
+    fig.suptitle(title)
+
+
 def ros_map(
     ax: Axes,
     yaml_path: PathStr,

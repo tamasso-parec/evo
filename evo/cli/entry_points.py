@@ -54,6 +54,10 @@ def rpe() -> None:
     handle_entry_point("rpe")
 
 
+def nees() -> None:
+    handle_entry_point("nees")
+
+
 def res() -> None:
     handle_entry_point("res")
 

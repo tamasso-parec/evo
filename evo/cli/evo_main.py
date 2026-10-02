@@ -43,6 +43,7 @@ The following executables are available:
 Metrics:
    evo_ape - absolute pose error
    evo_rpe - relative pose error
+   evo_nees - normalized estimation error squared of pose covariances
 
 Tools:
    evo_traj - tool for analyzing, plotting or exporting multiple trajectories

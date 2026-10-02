@@ -69,6 +69,7 @@ rerun = ["rerun-sdk>=0.34.0"]  # Update also rerun_bridge.py when bumping this.
 [project.scripts]
 evo_ape = "evo.cli.entry_points:ape"
 evo_rpe = "evo.cli.entry_points:rpe"
+evo_nees = "evo.cli.entry_points:nees"
 evo_traj = "evo.cli.entry_points:traj"
 evo_res = "evo.cli.entry_points:res"
 evo_config = "evo.cli.config:main"
