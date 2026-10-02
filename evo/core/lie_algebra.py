@@ -221,6 +221,75 @@ def relative_se3(p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
     return np.dot(se3_inverse(p1), p2)
 
 
+def so3_left_jacobian(rotation_vector: np.ndarray) -> np.ndarray:
+    """
+    :param rotation_vector: 3x1 rotation vector (axis * angle)
+    :return: 3x3 left Jacobian of SO(3) (Barfoot, eq. 7.77a)
+    """
+    theta = np.linalg.norm(rotation_vector)
+    w = hat(rotation_vector)
+    if theta < 1e-4:
+        # Taylor expansion avoids the cancellation in the closed form.
+        a = 0.5 - theta**2 / 24.0
+        b = 1.0 / 6.0 - theta**2 / 120.0
+    else:
+        a = (1.0 - np.cos(theta)) / theta**2
+        b = (theta - np.sin(theta)) / theta**3
+    return np.eye(3) + a * w + b * w.dot(w)
+
+
+def so3_left_jacobian_inverse(rotation_vector: np.ndarray) -> np.ndarray:
+    """
+    :param rotation_vector: 3x1 rotation vector (axis * angle)
+    :return: 3x3 inverse of the left Jacobian of SO(3) (Barfoot, eq. 7.77b)
+    """
+    theta = np.linalg.norm(rotation_vector)
+    w = hat(rotation_vector)
+    if theta < 1e-4:
+        b = 1.0 / 12.0 + theta**2 / 720.0
+    else:
+        b = 1.0 / theta**2 - 1.0 / (2.0 * theta * np.tan(0.5 * theta))
+    return np.eye(3) - 0.5 * w + b * w.dot(w)
+
+
+# Twist coordinates xi in this module are ordered rotation first:
+# xi = [omega, upsilon] (like g2o / ORB-SLAM, while e.g. Sophus puts the
+# translation first).
+
+
+def se3_exp(xi: np.ndarray) -> np.ndarray:
+    """
+    :param xi: 6x1 twist coordinates [omega, upsilon]
+    :return: SE(3) matrix (matrix exponential of se(3))
+    """
+    omega, upsilon = xi[:3], xi[3:]
+    return se3(so3_exp(omega), so3_left_jacobian(omega).dot(upsilon))
+
+
+def se3_log(p: np.ndarray) -> np.ndarray:
+    """
+    :param p: SE(3) matrix
+    :return: 6x1 twist coordinates [omega, upsilon] (inverse of se3_exp)
+    """
+    omega = so3_log(p[:3, :3])
+    upsilon = so3_left_jacobian_inverse(omega).dot(p[:3, 3])
+    return np.concatenate((omega, upsilon))
+
+
+def se3_adjoint(p: np.ndarray) -> np.ndarray:
+    """
+    :param p: SE(3) matrix
+    :return: 6x6 adjoint matrix of p for twists [omega, upsilon], i.e.
+             p * se3_exp(xi) * p^{-1} == se3_exp(se3_adjoint(p) * xi)
+    """
+    r, t = p[:3, :3], p[:3, 3]
+    adjoint = np.zeros((6, 6))
+    adjoint[:3, :3] = r
+    adjoint[3:, :3] = hat(t).dot(r)
+    adjoint[3:, 3:] = r
+    return adjoint
+
+
 def random_so3() -> np.ndarray:
     """
     :return: a random SO(3) matrix (for debugging)

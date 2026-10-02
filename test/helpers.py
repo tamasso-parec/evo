@@ -41,3 +41,35 @@ def fake_trajectory(length, timestamp_distance, start_time=0.0):
         poses_se3=random_se3_list(length),
         timestamps=fake_timestamps(length, timestamp_distance, start_time),
     )
+
+
+def random_covariances(length, rng, std=0.05):
+    """
+    :return: length x 6 x 6 random, positive definite covariances
+    """
+    a = rng.normal(scale=std, size=(length, 6, 6))
+    return a @ a.transpose(0, 2, 1) + 1e-6 * np.eye(6)
+
+
+def fake_trajectory_with_covariances(
+    length, timestamp_distance, rng, start_time=0.0
+):
+    traj = fake_trajectory(length, timestamp_distance, start_time)
+    traj.covariances = random_covariances(length, rng)
+    return traj
+
+
+def perturbed_reference(traj_est, rng, covariance_scale=1.0):
+    """
+    Samples a reference trajectory T_ref = T_est * exp(xi) with
+    xi ~ N(0, covariance_scale * covariance) for each pose of traj_est.
+    """
+    poses_ref = [
+        p.dot(lie.se3_exp(rng.multivariate_normal(np.zeros(6), c)))
+        for p, c in zip(
+            traj_est.poses_se3, covariance_scale * traj_est.covariances
+        )
+    ]
+    return PoseTrajectory3D(
+        poses_se3=poses_ref, timestamps=traj_est.timestamps.copy()
+    )

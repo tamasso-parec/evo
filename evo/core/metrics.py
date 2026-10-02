@@ -28,6 +28,7 @@ import typing
 from enum import Enum, unique
 
 import numpy as np
+from scipy import stats
 
 from evo import EvoException
 from evo.core import filters, trajectory
@@ -513,6 +514,221 @@ class APE(PE):
             )
         else:
             raise MetricsException("unsupported pose_relation")
+
+
+# Slices of the twist coordinates [omega, upsilon] used by NEES.
+NEES_PARTS = {
+    PoseRelation.full_transformation: slice(0, 6),
+    PoseRelation.rotation_part: slice(0, 3),
+    PoseRelation.translation_part: slice(3, 6),
+}
+
+
+def clopper_pearson_interval(
+    successes: int, trials: int, confidence: float = 0.95
+) -> tuple[float, float]:
+    """
+    Exact (Clopper-Pearson) confidence interval of a binomial proportion.
+    :param successes: number of successes
+    :param trials: number of trials
+    :param confidence: confidence level of the two-sided interval
+    :return: lower and upper bound of the interval
+    """
+    alpha = 1.0 - confidence
+    low = 0.0
+    high = 1.0
+    if successes > 0:
+        low = stats.beta.ppf(alpha / 2, successes, trials - successes + 1)
+    if successes < trials:
+        high = stats.beta.ppf(1 - alpha / 2, successes + 1, trials - successes)
+    return float(low), float(high)
+
+
+class NEES(PE):
+    """
+    NEES: normalized estimation error squared
+    metric for investigating the consistency of the pose covariances of an
+    estimated trajectory, i.e. if its errors w.r.t. the reference are
+    distributed like its covariances claim
+
+    The error of each pose is the twist xi = lie.se3_log(T_est^-1 * T_ref),
+    and its NEES is xi^T * covariance^-1 * xi, using the covariances of the
+    estimated trajectory (see PosePath3D.covariances). For consistent
+    covariances, the NEES values follow a chi-square distribution with
+    the number of degrees of freedom (dof) of the pose relation.
+    """
+
+    def __init__(
+        self,
+        pose_relation: PoseRelation = PoseRelation.full_transformation,
+        coverage_levels: typing.Sequence[float] = (0.5, 0.9, 0.95, 0.99),
+    ):
+        """
+        :param pose_relation: full_transformation (6 dof), rotation_part or
+                              translation_part (3 dof, using the marginal
+                              covariance of that part)
+        :param coverage_levels: probabilities of the chi-square quantiles
+                                for which to report the empirical coverage
+        """
+        if pose_relation not in NEES_PARTS:
+            raise MetricsException(
+                f"unsupported pose_relation for NEES: {pose_relation.value}"
+            )
+        self.pose_relation = pose_relation
+        self.coverage_levels = tuple(coverage_levels)
+        self.unit = Unit.none
+        self.E: list[np.ndarray] = []
+        # The following arrays only contain the poses with a positive
+        # definite covariance, whose indices are stored in valid_ids.
+        self.error = np.array([])
+        self.tangent_errors = np.array([])
+        self.whitened_errors = np.array([])
+        self.nll = np.array([])
+        self.valid_ids = np.array([], dtype=int)
+        self.num_rejected = 0
+
+    def __str__(self) -> str:
+        return f"NEES w.r.t. {self.pose_relation.value} ({self.dof} dof)"
+
+    @property
+    def dof(self) -> int:
+        part = NEES_PARTS[self.pose_relation]
+        return part.stop - part.start
+
+    @staticmethod
+    def _cholesky(covariance: np.ndarray) -> np.ndarray | None:
+        if not np.all(np.isfinite(covariance)):
+            return None
+        try:
+            return np.linalg.cholesky(covariance)
+        except np.linalg.LinAlgError:
+            return None
+
+    def process_data(self, data: PathPair) -> None:
+        """
+        Calculates the NEES on a batch of SE(3) poses from trajectories.
+        Poses whose covariance isn't positive definite are skipped.
+        :param data: tuple (traj_ref, traj_est) with:
+        traj_ref: reference evo.trajectory.PosePath or derived
+        traj_est: estimated evo.trajectory.PosePath or derived,
+                  with covariances
+        """
+        if len(data) != 2:
+            raise MetricsException(
+                "please provide data tuple as: (traj_ref, traj_est)"
+            )
+        traj_ref, traj_est = data
+        if traj_ref.num_poses != traj_est.num_poses:
+            raise MetricsException(
+                "trajectories must have same number of poses"
+            )
+        if traj_est.covariances is None:
+            raise MetricsException(
+                "the estimated trajectory must have covariances for NEES"
+            )
+
+        part = NEES_PARTS[self.pose_relation]
+        # Same error pose as APE: T_ref = T_est * E = T_est * exp(xi).
+        self.E = [
+            lie.relative_se3(x_t, x_t_star)
+            for x_t, x_t_star in zip(traj_est.poses_se3, traj_ref.poses_se3)
+        ]
+        tangent_errors = np.array([lie.se3_log(E_i)[part] for E_i in self.E])
+        covariances = traj_est.covariances[:, part, part]
+        covariances = 0.5 * (covariances + covariances.transpose(0, 2, 1))
+
+        cholesky = [self._cholesky(c) for c in covariances]
+        self.valid_ids = np.array(
+            [i for i, l in enumerate(cholesky) if l is not None], dtype=int
+        )
+        self.num_rejected = len(cholesky) - len(self.valid_ids)
+        if len(self.valid_ids) == 0:
+            raise MetricsException(
+                "no pose has a positive definite covariance"
+            )
+        if self.num_rejected > 0:
+            logger.warning(
+                f"Skipping {self.num_rejected} of {len(cholesky)} poses whose "
+                "covariance is not positive definite."
+            )
+        logger.debug(
+            f"Calculating NEES for {self.pose_relation.value} pose relation "
+            f"of {len(self.valid_ids)} poses..."
+        )
+
+        chol = np.array([cholesky[i] for i in self.valid_ids])
+        self.tangent_errors = tangent_errors[self.valid_ids]
+        self.whitened_errors = np.linalg.solve(
+            chol, self.tangent_errors[..., None]
+        )[..., 0]
+        self.error = np.sum(self.whitened_errors**2, axis=1)
+        log_det = 2.0 * np.log(np.diagonal(chol, axis1=1, axis2=2)).sum(axis=1)
+        self.nll = 0.5 * (self.error + log_det + self.dof * np.log(2 * np.pi))
+
+    def get_consistency_statistics(self) -> dict[str, float]:
+        """
+        :return: a dictionary with the statistics of a covariance
+                 consistency test (in addition to get_all_statistics() of PE):
+                 - anees: average NEES, expected to be equal to dof
+                 - anees_95_low/high: 95% interval of the ANEES of consistent
+                   covariances with the same number of samples
+                 - coverage_<level>: fraction of NEES values below the
+                   chi-square quantile of the level, expected to be the level
+                 - coverage_<level>_95_low/high: 95% confidence interval of it
+                 - mean_nll: average Gaussian negative log-likelihood
+                 - max_abs_whitened_mean: expected to be 0
+                 - max_abs_whitened_cov_error: max. absolute difference of the
+                   covariance of the whitened errors and identity,
+                   expected to be 0
+                 - samples, rejected: number of used and skipped poses
+        """
+        n = len(self.error)
+        if n == 0:
+            raise MetricsException(
+                "please process data before getting statistics"
+            )
+        anees_low, anees_high = (
+            stats.chi2.ppf((0.025, 0.975), n * self.dof) / n
+        )
+        statistics = {
+            "anees": float(np.mean(self.error)),
+            "anees_95_low": float(anees_low),
+            "anees_95_high": float(anees_high),
+        }
+        for level in self.coverage_levels:
+            key = f"coverage_{100 * level:g}"
+            covered = int(
+                np.count_nonzero(self.error <= stats.chi2.ppf(level, self.dof))
+            )
+            low, high = clopper_pearson_interval(covered, n)
+            statistics[key] = covered / n
+            statistics[f"{key}_95_low"] = low
+            statistics[f"{key}_95_high"] = high
+        statistics["mean_nll"] = float(np.mean(self.nll))
+        statistics["max_abs_whitened_mean"] = float(
+            np.abs(self.whitened_errors.mean(axis=0)).max()
+        )
+        if n > 1:
+            whitened_cov = np.cov(self.whitened_errors, rowvar=False)
+            statistics["max_abs_whitened_cov_error"] = float(
+                np.abs(whitened_cov - np.eye(self.dof)).max()
+            )
+        statistics["samples"] = n
+        statistics["rejected"] = self.num_rejected
+        return statistics
+
+    def get_all_statistics(self) -> dict[str, float]:
+        statistics = super(NEES, self).get_all_statistics()
+        statistics.update(self.get_consistency_statistics())
+        return statistics
+
+    def get_result(
+        self, ref_name: str = "reference", est_name: str = "estimate"
+    ) -> Result:
+        result = super(NEES, self).get_result(ref_name, est_name)
+        result.add_np_array("nll_array", self.nll)
+        result.add_np_array("valid_ids", self.valid_ids)
+        return result
 
 
 def id_pairs_from_delta(

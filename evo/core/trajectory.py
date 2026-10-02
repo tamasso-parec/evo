@@ -65,6 +65,7 @@ class PosePath3D(object):
         poses_se3: typing.Sequence[np.ndarray] | None = None,
         meta: dict | None = None,
         name: str | None = None,
+        covariances: np.ndarray | None = None,
     ):
         """
         :param positions_xyz: nx3 list of x,y,z positions
@@ -73,6 +74,8 @@ class PosePath3D(object):
         :param meta: optional metadata
         :param name: optional name of the data source, e.g. a file path or a
                      topic. Used as label in logging and other output.
+        :param covariances: optional nx6x6 pose covariances,
+                            see the covariances property for the convention
         """
         self._cache = PoseCache(
             positions_xyz=positions_xyz,
@@ -83,6 +86,7 @@ class PosePath3D(object):
             raise TrajectoryException("pose data is empty")
         self.meta = {} if meta is None else meta
         self.name = name
+        self.covariances = covariances
         self._projected = False
 
     def __str__(self) -> str:
@@ -154,6 +158,43 @@ class PosePath3D(object):
         """
         return self._cache.path_length
 
+    @property
+    def covariances(self) -> np.ndarray | None:
+        """
+        Optional nx6x6 covariances of the poses, or None.
+        Each covariance is the one of the right perturbation
+        xi = [omega, upsilon] (rotation first) of its pose T, i.e. the true
+        pose is modeled as T * lie.se3_exp(xi) with xi ~ N(0, covariance).
+        In other words, the uncertainty is expressed in the local frame of
+        each pose. Transformations of the path update the covariances
+        accordingly, operations that can't be applied to them drop them.
+        """
+        return self._covariances
+
+    @covariances.setter
+    def covariances(self, covariances: np.ndarray | None) -> None:
+        if covariances is not None:
+            covariances = np.array(covariances, dtype=float)
+            if covariances.shape != (self.num_poses, 6, 6):
+                raise TrajectoryException(
+                    f"covariances must have shape ({self.num_poses}, 6, 6), "
+                    f"got {covariances.shape}"
+                )
+        self._covariances = covariances
+
+    def _drop_covariances(self, reason: str) -> None:
+        if self._covariances is None:
+            return
+        logger.warning(
+            f"Dropping the pose covariances of {self.name}: {reason}"
+        )
+        self._covariances = None
+
+    def _slice_covariances(self, start: int, stop: int) -> np.ndarray | None:
+        if self._covariances is None:
+            return None
+        return self._covariances[start:stop]
+
     # self.__dict__ keys of caches of derived values.
     _DERIVED_CACHES: tuple[str, ...] = ()
 
@@ -179,6 +220,10 @@ class PosePath3D(object):
         if right_mul and not propagate:
             # Transform each pose individually.
             new_poses = [np.dot(p, t) for p in poses]
+            if self._covariances is not None:
+                # T * exp(xi) * t == T * t * exp(Ad(t^-1) * xi)
+                adjoint = lie.se3_adjoint(lie.se3_inverse(t))
+                self._covariances = adjoint @ self._covariances @ adjoint.T
         elif right_mul and propagate:
             # Transform each pose and propagate resulting drift to the next.
             ids = np.arange(0, self.num_poses, 1, dtype=int)
@@ -189,7 +234,10 @@ class PosePath3D(object):
             new_poses = [poses[0]]
             for i, j in zip(ids[:-1], ids):
                 new_poses.append(new_poses[j].dot(rel_poses[i]))
+            self._drop_covariances("propagated transformation")
         else:
+            # Left-multiplication doesn't change the local frames of the
+            # poses, so the covariances stay valid.
             new_poses = [np.dot(t, p) for p in poses]
         self._cache.replace_poses_se3(new_poses)
         self._drop_derived()
@@ -200,6 +248,10 @@ class PosePath3D(object):
         :param s: scale factor
         """
         self._cache.scale_translations(s)
+        if self._covariances is not None:
+            # Scales the translation part of the twists.
+            d = np.array([1.0, 1.0, 1.0, s, s, s])
+            self._covariances = self._covariances * np.outer(d, d)
         self._drop_derived()
 
     def project(self, plane: Plane) -> None:
@@ -232,6 +284,7 @@ class PosePath3D(object):
         # Poses were mutated in place; cached xyz/quat must be re-derived.
         self._cache.invalidate_xyz_quat()
         self._drop_derived()
+        self._drop_covariances("projection into a plane")
         self._projected = True
 
     def align(
@@ -305,6 +358,8 @@ class PosePath3D(object):
         :param ids: list of integer indices
         """
         self._cache.reduce_to_ids(ids)
+        if self._covariances is not None:
+            self._covariances = self._covariances[ids]
         self._drop_derived()
 
     def downsample(self, num_poses: int) -> None:
@@ -361,6 +416,7 @@ class PosePath3D(object):
             PosePath3D(
                 poses_se3=self.poses_se3[jumps[i] : jumps[i + 1]],
                 name=self.name,
+                covariances=self._slice_covariances(jumps[i], jumps[i + 1]),
             )
             for i in range(len(jumps) - 1)
         ]
@@ -426,12 +482,18 @@ class PoseTrajectory3D(PosePath3D, object):
         poses_se3: typing.Sequence[np.ndarray] | None = None,
         meta: dict | None = None,
         name: str | None = None,
+        covariances: np.ndarray | None = None,
     ):
         """
         :param timestamps: optional nx1 list of timestamps
         """
         super(PoseTrajectory3D, self).__init__(
-            positions_xyz, orientations_quat_wxyz, poses_se3, meta, name
+            positions_xyz,
+            orientations_quat_wxyz,
+            poses_se3,
+            meta,
+            name,
+            covariances,
         )
         # this is a bit ugly...
         if timestamps is None:
@@ -533,6 +595,12 @@ class PoseTrajectory3D(PosePath3D, object):
             raise TrajectoryException(
                 "can't interpolate a trajectory with less than two poses"
             )
+        if self.covariances is not None:
+            raise TrajectoryException(
+                "can't interpolate pose covariances - set covariances to "
+                "None to interpolate only the poses, or sync with the "
+                "nearest_time method instead"
+            )
         timestamps = np.asarray(timestamps, dtype=float)
         if timestamps.ndim == 0:
             timestamps = timestamps.reshape(1)
@@ -613,6 +681,7 @@ class PoseTrajectory3D(PosePath3D, object):
                 timestamps=self.timestamps[gaps[i] : gaps[i + 1]],
                 poses_se3=self.poses_se3[gaps[i] : gaps[i + 1]],
                 name=self.name,
+                covariances=self._slice_covariances(gaps[i], gaps[i + 1]),
             )
             for i in range(len(gaps) - 1)
         ]
@@ -633,6 +702,7 @@ class PoseTrajectory3D(PosePath3D, object):
                 timestamps=self.timestamps[jumps[i] : jumps[i + 1]],
                 poses_se3=self.poses_se3[jumps[i] : jumps[i + 1]],
                 name=self.name,
+                covariances=self._slice_covariances(jumps[i], jumps[i + 1]),
             )
             for i in range(len(jumps) - 1)
         ]
@@ -658,6 +728,7 @@ class PoseTrajectory3D(PosePath3D, object):
                 timestamps=self.timestamps[jumps[i] : jumps[i + 1]],
                 poses_se3=self.poses_se3[jumps[i] : jumps[i + 1]],
                 name=self.name,
+                covariances=self._slice_covariances(jumps[i], jumps[i + 1]),
             )
             for i in range(len(jumps) - 1)
         ]
@@ -801,4 +872,11 @@ def merge(trajectories: typing.Sequence[PoseTrajectory3D]) -> PoseTrajectory3D:
     merged_stamps = merged_stamps[order]
     merged_xyz = merged_xyz[order]
     merged_quat = merged_quat[order]
-    return PoseTrajectory3D(merged_xyz, merged_quat, merged_stamps)
+    merged_covariances = None
+    if all(t.covariances is not None for t in trajectories):
+        merged_covariances = np.concatenate(
+            [t.covariances for t in trajectories]
+        )[order]
+    return PoseTrajectory3D(
+        merged_xyz, merged_quat, merged_stamps, covariances=merged_covariances
+    )

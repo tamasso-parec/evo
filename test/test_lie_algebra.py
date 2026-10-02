@@ -24,6 +24,7 @@ import timeit
 import unittest
 
 import numpy as np
+import scipy.linalg
 
 from evo.core import lie_algebra as lie
 
@@ -102,6 +103,62 @@ class TestSO3(unittest.TestCase):
         # here, axis is a rotation vector with norm = angle
         rotvec = lie.vee(log)
         self.assertTrue(np.allclose(r, lie.so3_exp(rotvec)))
+
+
+class TestSE3Tangent(unittest.TestCase):
+    def setUp(self):
+        self.rng = np.random.default_rng(0)
+
+    def random_twist(self, max_angle=3.0):
+        omega = self.rng.normal(size=3)
+        omega *= self.rng.uniform(0.0, max_angle) / np.linalg.norm(omega)
+        return np.concatenate((omega, self.rng.normal(size=3)))
+
+    def test_se3_log_identity(self):
+        self.assertTrue(np.allclose(lie.se3_log(np.eye(4)), np.zeros(6)))
+
+    def test_se3_exp_log(self):
+        for _ in range(100):
+            xi = self.random_twist()
+            p = lie.se3_exp(xi)
+            self.assertTrue(lie.is_se3(p))
+            self.assertTrue(np.allclose(lie.se3_log(p), xi))
+
+    def test_se3_log_exp_random_poses(self):
+        for _ in range(100):
+            p = lie.random_se3()
+            self.assertTrue(np.allclose(lie.se3_exp(lie.se3_log(p)), p))
+
+    def test_se3_log_matches_matrix_logarithm(self):
+        for _ in range(20):
+            xi = self.random_twist()
+            log = np.real(scipy.linalg.logm(lie.se3_exp(xi)))
+            self.assertTrue(np.allclose(lie.vee(log[:3, :3]), xi[:3]))
+            self.assertTrue(np.allclose(log[:3, 3], xi[3:]))
+
+    def test_se3_exp_log_small_angles(self):
+        # Covers both sides of the Taylor expansion threshold.
+        for angle in (0.0, 1e-9, 9e-5, 1.1e-4, 1e-3):
+            xi = np.array([angle, 0.0, 0.0, 1.0, 2.0, 3.0])
+            log = np.real(scipy.linalg.logm(lie.se3_exp(xi)))
+            self.assertTrue(np.allclose(log[:3, 3], xi[3:], atol=1e-12))
+            self.assertTrue(np.allclose(lie.se3_log(lie.se3_exp(xi)), xi))
+
+    def test_so3_left_jacobian_inverse(self):
+        for angle in (0.0, 5e-5, 0.5, 3.0):
+            rotation_vector = angle * np.array([0.6, 0.0, 0.8])
+            product = lie.so3_left_jacobian(rotation_vector).dot(
+                lie.so3_left_jacobian_inverse(rotation_vector)
+            )
+            self.assertTrue(np.allclose(product, np.eye(3)))
+
+    def test_se3_adjoint(self):
+        for _ in range(20):
+            p = lie.random_se3()
+            xi = self.random_twist(max_angle=1.0)
+            lhs = p.dot(lie.se3_exp(xi)).dot(lie.se3_inverse(p))
+            rhs = lie.se3_exp(lie.se3_adjoint(p).dot(xi))
+            self.assertTrue(np.allclose(lhs, rhs))
 
 
 class TestSim3(unittest.TestCase):

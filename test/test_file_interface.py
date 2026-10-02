@@ -268,5 +268,88 @@ class TestLoadTransform(unittest.TestCase):
         self.assertTrue(np.allclose(transform_out, transform_in))
 
 
+class TestCsvTrajectoryWithCovariances(unittest.TestCase):
+    @staticmethod
+    def csv(header, rows):
+        lines = [",".join(header)]
+        lines += [",".join(str(v) for v in row) for row in rows]
+        return io.StringIO("\n".join(lines) + "\n")
+
+    def setUp(self):
+        rng = np.random.default_rng(0)
+        self.traj = helpers.fake_trajectory_with_covariances(10, 0.1, rng)
+        # TUM order: tx ty tz qx qy qz qw
+        quat_xyzw = np.roll(self.traj.orientations_quat_wxyz, -1, axis=1)
+        self.rows = [
+            [t, i, *xyz, *q, *c.flatten()]
+            for i, (t, xyz, q, c) in enumerate(
+                zip(
+                    self.traj.timestamps,
+                    self.traj.positions_xyz,
+                    quat_xyzw,
+                    self.traj.covariances,
+                )
+            )
+        ]
+
+    def header(self, pose_prefix, covariance_prefix):
+        return [
+            "timestamp",
+            "keyframe_id",
+            *[pose_prefix + s for s in file_interface.POSE_COLUMN_SUFFIXES],
+            *[
+                covariance_prefix + s
+                for s in file_interface.COVARIANCE_COLUMN_SUFFIXES
+            ],
+        ]
+
+    def check(self, traj):
+        self.assertEqual(traj, self.traj)
+        self.assertTrue(np.allclose(traj.covariances, self.traj.covariances))
+
+    def test_read_with_prefixes(self):
+        # Header of ORB-SLAM3 keyframe exports with pose covariances.
+        file = self.csv(self.header("twc_", "cov_tcw_"), self.rows)
+        self.check(file_interface.read_csv_trajectory_with_covariances(file))
+
+    def test_read_without_prefixes(self):
+        file = self.csv(self.header("", ""), self.rows)
+        self.check(file_interface.read_csv_trajectory_with_covariances(file))
+
+    def test_missing_covariance_column(self):
+        header = self.header("", "cov_")
+        file = self.csv(header[:-1], [row[:-1] for row in self.rows])
+        with self.assertRaises(file_interface.FileInterfaceException):
+            file_interface.read_csv_trajectory_with_covariances(file)
+
+    def test_ambiguous_pose_columns(self):
+        header = self.header("a_", "cov_")
+        header += [f"b_{s}" for s in file_interface.POSE_COLUMN_SUFFIXES]
+        rows = [row + row[2:9] for row in self.rows]
+        with self.assertRaises(file_interface.FileInterfaceException):
+            file_interface.read_csv_trajectory_with_covariances(
+                self.csv(header, rows)
+            )
+
+    def test_missing_timestamp(self):
+        header = self.header("", "cov_")
+        header[0] = "time"
+        with self.assertRaises(file_interface.FileInterfaceException):
+            file_interface.read_csv_trajectory_with_covariances(
+                self.csv(header, self.rows)
+            )
+
+    def test_no_poses(self):
+        file = self.csv(self.header("", "cov_"), [])
+        with self.assertRaises(file_interface.FileInterfaceException):
+            file_interface.read_csv_trajectory_with_covariances(file)
+
+    def test_invalid_value(self):
+        self.rows[2][5] = "nope"
+        file = self.csv(self.header("", "cov_"), self.rows)
+        with self.assertRaises(file_interface.FileInterfaceException):
+            file_interface.read_csv_trajectory_with_covariances(file)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -25,6 +25,7 @@ import copy
 import numpy as np
 
 import helpers
+from evo.core import metrics
 from evo.core import sync
 from evo.core import trajectory
 from evo.core import transformations as tr
@@ -479,6 +480,139 @@ class TestTrajectoryAlignment(unittest.TestCase):
 
         with self.assertRaises(GeometryException):
             traj_1.align(traj_2, correct_scale=True)
+
+
+class TestCovariances(unittest.TestCase):
+    def setUp(self):
+        self.rng = np.random.default_rng(0)
+        self.traj = helpers.fake_trajectory_with_covariances(20, 0.1, self.rng)
+
+    def nees(self, traj_ref, traj_est):
+        nees = metrics.NEES()
+        nees.process_data((traj_ref, traj_est))
+        return nees.error
+
+    def test_no_covariances_by_default(self):
+        self.assertIsNone(helpers.fake_trajectory(5, 0.1).covariances)
+        self.assertIsNone(helpers.fake_path(5).covariances)
+
+    def test_wrong_shape(self):
+        with self.assertRaises(trajectory.TrajectoryException):
+            PoseTrajectory3D(
+                poses_se3=self.traj.poses_se3,
+                timestamps=self.traj.timestamps,
+                covariances=self.traj.covariances[1:],
+            )
+        with self.assertRaises(trajectory.TrajectoryException):
+            self.traj.covariances = np.zeros((20, 3, 3))
+
+    def test_reduce_to_ids(self):
+        ids = [0, 4, 7, 19]
+        expected = self.traj.covariances[ids]
+        self.traj.reduce_to_ids(ids)
+        self.assertTrue(np.array_equal(self.traj.covariances, expected))
+
+    def test_reduce_to_time_range(self):
+        expected = self.traj.covariances[5:11]
+        self.traj.reduce_to_time_range(0.5, 1.0)
+        self.assertTrue(np.array_equal(self.traj.covariances, expected))
+
+    def test_sync_keeps_pose_association(self):
+        traj_ref = helpers.perturbed_reference(self.traj, self.rng)
+        expected_nees = self.nees(traj_ref, self.traj)
+        # Reference with an extra pose between each pair of estimates.
+        ref_dense = trajectory.merge(
+            [traj_ref, helpers.fake_trajectory(19, 0.1, start_time=0.05)]
+        )
+        for sync_method in sync.SyncMethod:
+            ref_synced, est_synced = sync.associate_trajectories(
+                ref_dense, self.traj, max_diff=0.01, sync_method=sync_method
+            )
+            self.assertTrue(
+                np.allclose(self.nees(ref_synced, est_synced), expected_nees)
+            )
+
+    def test_interpolate_raises(self):
+        with self.assertRaises(trajectory.TrajectoryException):
+            self.traj.interpolate(np.array([0.05]))
+        self.traj.covariances = None
+        self.traj.interpolate(np.array([0.05]))
+
+    def test_left_transformation_invariance(self):
+        traj_ref = helpers.perturbed_reference(self.traj, self.rng)
+        expected_nees = self.nees(traj_ref, self.traj)
+        covariances = self.traj.covariances.copy()
+        t = lie.random_se3()
+        traj_ref.transform(t)
+        self.traj.transform(t)
+        self.assertTrue(np.allclose(self.traj.covariances, covariances))
+        self.assertTrue(
+            np.allclose(self.nees(traj_ref, self.traj), expected_nees)
+        )
+
+    def test_right_transformation_invariance(self):
+        traj_ref = helpers.perturbed_reference(self.traj, self.rng)
+        expected_nees = self.nees(traj_ref, self.traj)
+        t = lie.random_se3()
+        traj_ref.transform(t, right_mul=True)
+        self.traj.transform(t, right_mul=True)
+        self.assertTrue(
+            np.allclose(self.nees(traj_ref, self.traj), expected_nees)
+        )
+
+    def test_scale_invariance(self):
+        traj_ref = helpers.perturbed_reference(self.traj, self.rng)
+        expected_nees = self.nees(traj_ref, self.traj)
+        traj_ref.scale(2.5)
+        self.traj.scale(2.5)
+        self.assertTrue(
+            np.allclose(self.nees(traj_ref, self.traj), expected_nees)
+        )
+
+    def test_sim3_alignment(self):
+        # Aligning a scaled and transformed copy of the estimate to the
+        # original has to restore the original NEES.
+        traj_ref = helpers.perturbed_reference(self.traj, self.rng)
+        expected_nees = self.nees(traj_ref, self.traj)
+        traj_est = copy.deepcopy(self.traj)
+        traj_est.scale(0.3)
+        traj_est.transform(lie.random_se3())
+        traj_est.align(self.traj, correct_scale=True)
+        self.assertTrue(
+            np.allclose(self.nees(traj_ref, traj_est), expected_nees)
+        )
+
+    def test_propagated_transformation_drops(self):
+        self.traj.transform(lie.random_se3(), right_mul=True, propagate=True)
+        self.assertIsNone(self.traj.covariances)
+
+    def test_projection_drops(self):
+        self.traj.project(trajectory.Plane.XY)
+        self.assertIsNone(self.traj.covariances)
+
+    def test_split_time_gaps(self):
+        self.traj.timestamps[10:] += 1.0
+        split = self.traj.split_time_gaps(0.5)
+        self.assertEqual(len(split), 2)
+        self.assertTrue(
+            np.array_equal(
+                np.concatenate([t.covariances for t in split]),
+                self.traj.covariances,
+            )
+        )
+
+    def test_merge(self):
+        traj_2 = helpers.fake_trajectory_with_covariances(
+            5, 0.1, self.rng, start_time=0.05
+        )
+        merged = trajectory.merge([self.traj, traj_2])
+        self.assertTrue(
+            np.array_equal(merged.covariances[1], traj_2.covariances[0])
+        )
+        merged = trajectory.merge(
+            [self.traj, helpers.fake_trajectory(5, 0.1, start_time=0.05)]
+        )
+        self.assertIsNone(merged.covariances)
 
 
 if __name__ == "__main__":

@@ -245,6 +245,92 @@ def read_euroc_csv_trajectory(file_path: PathStrHandle) -> PoseTrajectory3D:
     return PoseTrajectory3D(xyz, quat, stamps, name=name_from_file(file_path))
 
 
+POSE_COLUMN_SUFFIXES = ("tx", "ty", "tz", "qx", "qy", "qz", "qw")
+COVARIANCE_COLUMN_SUFFIXES = tuple(
+    f"{row}{col}" for row in range(6) for col in range(6)
+)
+
+
+def _column_prefix(header: list[str], suffixes: tuple[str, ...]) -> str:
+    """
+    :return: the unique prefix for which header contains all suffixes
+    """
+    candidates = {
+        name[: -len(suffixes[0])]
+        for name in header
+        if name.endswith(suffixes[0])
+    }
+    prefixes = [
+        p for p in candidates if all(p + s in header for s in suffixes)
+    ]
+    if len(prefixes) != 1:
+        raise FileInterfaceException(
+            f"expected one set of columns <prefix>{', <prefix>'.join(suffixes)}"
+            f" in the header, found {len(prefixes)}"
+        )
+    return prefixes[0]
+
+
+def read_csv_trajectory_with_covariances(
+    file_path: PathStrHandle,
+) -> PoseTrajectory3D:
+    """
+    parses a trajectory with pose covariances from a .csv file with header:
+    - "timestamp" column in seconds
+    - <prefix>tx, <prefix>ty, <prefix>tz, <prefix>qx, <prefix>qy,
+      <prefix>qz, <prefix>qw pose columns (like TUM format)
+    - <prefix>00, <prefix>01, ..., <prefix>55 row-major covariance columns
+      following the convention of PosePath3D.covariances
+    The prefixes are detected from the header and can be empty,
+    e.g. "twc_tx" or "tx" and "cov_00" or "cov_tcw_00". Other columns are
+    ignored.
+    :param file_path: the trajectory file path (or file handle)
+    :return: trajectory.PoseTrajectory3D object with covariances
+    """
+    raw_mat = csv_read_matrix(file_path, delim=",", comment_str="#")
+    if not raw_mat:
+        raise FileInterfaceException("csv file with covariances is empty")
+    header = [name.strip() for name in raw_mat[0]]
+    if "timestamp" not in header:
+        raise FileInterfaceException("missing timestamp column in the header")
+    pose_prefix = _column_prefix(header, POSE_COLUMN_SUFFIXES)
+    covariance_prefix = _column_prefix(header, COVARIANCE_COLUMN_SUFFIXES)
+    columns = [
+        header.index(name)
+        for name in (
+            "timestamp",
+            *[pose_prefix + s for s in POSE_COLUMN_SUFFIXES],
+            *[covariance_prefix + s for s in COVARIANCE_COLUMN_SUFFIXES],
+        )
+    ]
+    try:
+        mat = np.array(
+            [[row[i] for i in columns] for row in raw_mat[1:]], dtype=float
+        )
+    except (IndexError, ValueError):
+        raise FileInterfaceException(
+            "csv file with covariances has invalid or missing values"
+        )
+    if len(mat) == 0:
+        raise FileInterfaceException("csv file with covariances has no poses")
+    stamps = mat[:, 0]
+    xyz = mat[:, 1:4]
+    quat = np.roll(mat[:, 4:8], 1, axis=1)  # shift 1 column -> w in front
+    covariances = mat[:, 8:].reshape(-1, 6, 6)
+    if not hasattr(file_path, "read"):  # if not file handle
+        logger.debug(
+            f"Loaded {len(stamps)} stamps, poses and covariances from: "
+            f"{file_path}"
+        )
+    return PoseTrajectory3D(
+        xyz,
+        quat,
+        stamps,
+        name=name_from_file(file_path),
+        covariances=covariances,
+    )
+
+
 def _get_xyz_quat_from_transform_stamped(
     msg,
 ) -> tuple[list[float], list[float]]:
